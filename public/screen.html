@@ -66,6 +66,11 @@
         </div>
         <span class="hud-value" id="hudProgressText">0%</span>
       </div>
+      <!-- ── Live Timer (new) ── -->
+      <div class="hud-item">
+        <span class="hud-label">TIME</span>
+        <span class="hud-value neon-yellow" id="hudTimer">00:00</span>
+      </div>
       <div class="hud-item">
         <span class="hud-label">ROOM</span>
         <span class="hud-value neon-pink" id="hudRoomCode">----</span>
@@ -81,7 +86,21 @@
     <div class="activity-ticker" id="activityTicker">
       SYSTEM ONLINE — Solvers ready
     </div>
+
+    <!-- ── Live Leaderboard Panel (floating over gameplay, right side) ── -->
+    <div id="liveLeaderboardPanel">
+      <div class="live-lb-header">
+        <span class="live-lb-pulse">⚡</span>
+        <span class="live-lb-title">LIVE SOLVERS</span>
+      </div>
+      <div id="liveLeaderboardList">
+        <div class="lb-empty">Waiting for players…</div>
+      </div>
+    </div>
   </div>
+
+  <!-- Canvas-Confetti library (CDN) for full-screen celebration -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
 
   <!-- 3. GAME OVER / COMPLETED SCREEN -->
   <div id="completionScreen" class="screen-panel hidden">

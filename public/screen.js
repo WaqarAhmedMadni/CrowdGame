@@ -25,6 +25,10 @@ let confettiInterval = null; // Tracked so we can clear it between games
 let puzzleImage = new Image();
 let puzzleData = null; // Contains coordinates, pieces info
 let dragPositions = new Map(); // pieceId -> { currentX, currentY } (for live drag visualizers)
+// ── Live Leaderboard & Timer ──
+let liveLeaderboard = {};   // { [displayPlayerName]: {colour,pieces,lastTimeSec } }
+let liveTimerSecs   = 0;
+let liveTimerInterval = null;
 
 // Procedural Audio Synthesizer (Same synth engine as desktop.js for zero asset load!)
 let audioCtx = null;
@@ -53,6 +57,22 @@ const Sound = {
     
     osc.start();
     osc.stop(audioCtx.currentTime + 0.2);
+  },
+    // ── Buzzy descending tone for wrong placement ──
+  playError() 
+  {
+    if (!audioCtx) return;
+    const osc  = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(80, audioCtx.currentTime + 0.35);
+    gain.gain.setValueAtTime(0.22, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.35);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.35);
   },
 
   playComplete() {
@@ -185,6 +205,10 @@ function setupConnection() {
   socket.on('player-joined', (player) => {
     initAudio();
     addPlayerToLobbyGrid(player);
+    // Seed leaderboard entry with player colour so dot appears immediately
+    if (!liveLeaderboard[player.displayName]) {
+      liveLeaderboard[player.displayName] = { color: player.color, pieces: 0, lastTimeSec: null };
+    }
   });
 
   socket.on('player-left', (player) => {
@@ -208,37 +232,51 @@ function setupConnection() {
     dragPositions.set(pieceId, { currentX, currentY });
   });
 
-  // Event: Piece snapped correctly
+ // Event: Piece snapped correctly
   socket.on('piece-placed', (data) => {
-    const { pieceId, correctX, correctY, placedBy, progress, isSolved } = data;
-    
-    // Snapped piece removes its temporary live dragging marker
+    const { pieceId, correctX, correctY, placedBy, progress, isSolved, score } = data;
+
     dragPositions.delete(pieceId);
-    
+
     if (puzzleData) {
       const piece = puzzleData.pieces.find(p => p.id === pieceId);
       if (piece) {
-        piece.isPlaced = true;
-        piece.currentX = correctX;
-        piece.currentY = correctY;
+        piece.isPlaced     = true;
+        piece.currentX     = correctX;
+        piece.currentY     = correctY;
         piece.placedByName = placedBy;
       }
     }
 
-    // Play snapping audio and show visual toast
     Sound.playSnap();
     spawnSparks(correctX + (puzzleData.pieceWidth / 2), correctY + (puzzleData.pieceHeight / 2), '#ff007f');
     spawnSparks(correctX + (puzzleData.pieceWidth / 2), correctY + (puzzleData.pieceHeight / 2), '#00f3ff');
-    
-    // Ticker announcement
+
     const ticker = document.getElementById('activityTicker');
     ticker.textContent = `🎯 ${placedBy} placed piece (${progress}% solved)`;
+    ticker.classList.remove('ticker-error');
     ticker.classList.add('pulse');
     setTimeout(() => ticker.classList.remove('pulse'), 400);
 
-    // Update HUD
     document.getElementById('hudProgressFill').style.width = `${progress}%`;
     document.getElementById('hudProgressText').textContent = `${progress}%`;
+
+    // ── Update live leaderboard ───────────────────────────────────
+    if (!liveLeaderboard[placedBy]) {
+      liveLeaderboard[placedBy] = { color: '#ffffff', pieces: 0, lastTimeSec: null };
+    }
+    liveLeaderboard[placedBy].pieces     = Math.round((score || 0) / 100);
+    liveLeaderboard[placedBy].lastTimeSec = liveTimerSecs;
+    renderLiveLeaderboard(placedBy);
+  });
+
+  // ── Event: Piece placed in WRONG position ─────────────────────────
+  socket.on('piece-placement-failed', (data) => {
+    Sound.playError();
+    const ticker = document.getElementById('activityTicker');
+    ticker.textContent = `❌ ${data.placedBy} — wrong position!`;
+    ticker.classList.add('ticker-error');
+    setTimeout(() => ticker.classList.remove('ticker-error'), 900);
   });
 
   // Event: Puzzle solved!
@@ -284,6 +322,26 @@ function startJigsawPuzzle(state) {
     clearInterval(confettiInterval);
     confettiInterval = null;
   }
+  // ── Reset live timer ─────────────────────────────────────────────
+  if (liveTimerInterval) clearInterval(liveTimerInterval);
+  liveTimerSecs = 0;
+  const hudTimer = document.getElementById('hudTimer');
+  if (hudTimer) hudTimer.textContent = '00:00';
+  liveTimerInterval = setInterval(() => {
+    liveTimerSecs++;
+    if (hudTimer) {
+      const m = String(Math.floor(liveTimerSecs / 60)).padStart(2, '0');
+      const s = String(liveTimerSecs % 60).padStart(2, '0');
+      hudTimer.textContent = `${m}:${s}`;
+    }
+  }, 1000);
+
+  // ── Reset live leaderboard scores (keep colours from lobby) ──────
+  Object.keys(liveLeaderboard).forEach(name => {
+    liveLeaderboard[name].pieces      = 0;
+    liveLeaderboard[name].lastTimeSec = null;
+  });
+  renderLiveLeaderboard(null);
 
   // Transition views — must add 'active' to bring opacity from 0 → 1
   document.getElementById('lobbyScreen').classList.remove('active');
@@ -439,6 +497,12 @@ function triggerPuzzleCompletion({ leaderboard, totalPieces }) {
   currentState = SCREEN_STATE.COMPLETE;
   Sound.playComplete();
 
+  // ── Stop live timer ──────────────────────────────────────────────
+  if (liveTimerInterval) {
+    clearInterval(liveTimerInterval);
+    liveTimerInterval = null;
+  }
+
   // Calculate solving time
   const endTime = new Date();
   const durationSec = Math.round((endTime - startTime) / 1000);
@@ -472,7 +536,16 @@ function triggerPuzzleCompletion({ leaderboard, totalPieces }) {
     `;
     list.appendChild(item);
   });
-
+// ── Full-screen canvas-confetti celebration 🎉 ──────────────────
+  if (typeof confetti !== 'undefined') {
+    const celebrationColors = ['#ff007f', '#00f3ff', '#ffb800', '#39ff14', '#9d00ff'];
+    const celebrationEnd = Date.now() + 5500;
+    (function launchCelebration() {
+      confetti({ particleCount: 9, angle: 60,  spread: 65, origin: { x: 0 }, colors: celebrationColors });
+      confetti({ particleCount: 9, angle: 120, spread: 65, origin: { x: 1 }, colors: celebrationColors });
+      if (Date.now() < celebrationEnd) requestAnimationFrame(launchCelebration);
+    })();
+  }
   // Spawn dynamic rain of completion particles (confetti)
   // Store the interval ID so it can be cancelled on the next game start.
   confettiInterval = setInterval(() => {
@@ -485,6 +558,40 @@ function triggerPuzzleCompletion({ leaderboard, totalPieces }) {
   }, 400);
 }
 
+// ── LIVE LEADERBOARD RENDERER ──────────────────────────────────────
+function renderLiveLeaderboard(flashedName) {
+  const container = document.getElementById('liveLeaderboardList');
+  if (!container) return;
+
+  const sorted = Object.entries(liveLeaderboard)
+    .filter(([, data]) => data.pieces > 0)
+    .map(([name, data]) => ({ name, ...data }))
+    .sort((a, b) => b.pieces - a.pieces);
+
+  if (sorted.length === 0) {
+    container.innerHTML = '<div class="lb-empty">No pieces placed yet</div>';
+    return;
+  }
+
+  const medals = ['🥇', '🥈', '🥉'];
+  container.innerHTML = sorted.map((p, i) => {
+    const rank    = medals[i] || `${i + 1}`;
+    const timeStr = p.lastTimeSec !== null
+      ? `@${String(Math.floor(p.lastTimeSec / 60)).padStart(2, '0')}:${String(p.lastTimeSec % 60).padStart(2, '0')}`
+      : '';
+    const flashClass = p.name === flashedName ? 'lb-score-flash' : '';
+    return `
+      <div class="lb-entry ${flashClass}">
+        <span class="lb-rank">${rank}</span>
+        <span class="lb-dot" style="background:${p.color};box-shadow:0 0 6px ${p.color}"></span>
+        <span class="lb-name">${p.name.toUpperCase()}</span>
+        <span class="lb-stats">
+          <span class="lb-pieces">${p.pieces}</span>
+          <span class="lb-time">${timeStr}</span>
+        </span>
+      </div>`;
+  }).join('');
+}
 // Main Frame tick
 function gameLoop() {
   updateStars();

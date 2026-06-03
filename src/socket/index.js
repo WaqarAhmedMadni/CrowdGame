@@ -229,8 +229,14 @@ function initSockets(io) {
           currentY: result.currentY
         });
 
-        // Notify the player of the incorrect placement
+        // Notify the player of the incorrect placement (haptic + sound on mobile)
         socket.emit('placement-incorrect', { pieceId: result.pieceId });
+
+        // Also notify the big screen so it can play an error sound
+        io.to(room.hostSocketId).emit('piece-placement-failed', {
+          pieceId: result.pieceId,
+          placedBy: player.displayName
+        });
       }
     });
 

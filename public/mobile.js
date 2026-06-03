@@ -194,11 +194,42 @@ document.addEventListener('DOMContentLoaded', () => {
     assignedPiecesPool.appendChild(el);
     setupDragging(el, p);
 
-    // Show a hint label indicating the grid target (row, col) for this piece
-    const hint = document.createElement('div');
-    hint.style.cssText = 'position:absolute;bottom:6px;left:0;right:0;text-align:center;font-size:11px;color:rgba(0,243,255,0.5);font-family:monospace;pointer-events:none;';
-    hint.textContent = `Target: row ${p.row + 1}, col ${p.col + 1}`;
-    assignedPiecesPool.appendChild(hint);
+    // ── Hint toggle button — hidden by default, only shows on demand ──
+    const hintBtn = document.createElement('button');
+    hintBtn.textContent = '💡 HINT';
+    hintBtn.style.cssText = [
+      'position:absolute', 'bottom:8px', 'left:50%',
+      'transform:translateX(-50%)',
+      'background:rgba(0,243,255,0.08)',
+      'color:rgba(0,243,255,0.6)',
+      'border:1px solid rgba(0,243,255,0.25)',
+      'border-radius:20px', 'padding:4px 14px',
+      'font-size:11px', 'font-family:monospace',
+      'letter-spacing:1px', 'cursor:pointer', 'z-index:10',
+      'transition:all 0.2s ease'
+    ].join(';');
+
+    const hintLabel = document.createElement('div');
+    hintLabel.style.cssText = [
+      'position:absolute', 'bottom:38px', 'left:0', 'right:0',
+      'text-align:center', 'font-size:12px',
+      'color:rgba(0,243,255,0.85)', 'font-family:monospace',
+      'pointer-events:none',
+      'background:rgba(0,0,0,0.55)', 'padding:4px 0',
+      'border-radius:6px', 'display:none'
+    ].join(';');
+    hintLabel.textContent = `Row ${p.row + 1}, Col ${p.col + 1}`;
+
+    let hintVisible = false;
+    hintBtn.addEventListener('click', () => {
+      hintVisible = !hintVisible;
+      hintLabel.style.display   = hintVisible ? 'block' : 'none';
+      hintBtn.style.color       = hintVisible ? 'rgba(255,184,0,0.9)' : 'rgba(0,243,255,0.6)';
+      hintBtn.style.borderColor = hintVisible ? 'rgba(255,184,0,0.4)' : 'rgba(0,243,255,0.25)';
+    });
+
+    assignedPiecesPool.appendChild(hintLabel);
+    assignedPiecesPool.appendChild(hintBtn);
 
     // Render selector tabs if there are multiple pieces
     if (currentAssignedPieces.length > 1) {
