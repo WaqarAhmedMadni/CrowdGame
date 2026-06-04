@@ -25,8 +25,10 @@ let confettiInterval = null; // Tracked so we can clear it between games
 let puzzleImage = new Image();
 let puzzleData = null; // Contains coordinates, pieces info
 let dragPositions = new Map(); // pieceId -> { currentX, currentY } (for live drag visualizers)
-// ── Live Leaderboard & Timer ──
-let liveLeaderboard = {};   // { [displayPlayerName]: {colour,pieces,lastTimeSec } }
+
+// ── Live Leaderboard & Timer (new) ──────────────────────────────
+// Key = player displayName (since piece-placed only gives us displayName)
+let liveLeaderboard = {};   // { [displayName]: { color, pieces, lastTimeSec } }
 let liveTimerSecs   = 0;
 let liveTimerInterval = null;
 
@@ -35,7 +37,13 @@ let audioCtx = null;
 
 function initAudio() {
   if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) { return; }
+  }
+  // Resume if browser suspended it due to autoplay policy
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
   }
 }
 
@@ -58,19 +66,22 @@ const Sound = {
     osc.start();
     osc.stop(audioCtx.currentTime + 0.2);
   },
-    // ── Buzzy descending tone for wrong placement ──
-  playError() 
-  {
+
+  // ── NEW: buzzy descending tone for wrong placement ──────────────
+  playError() {
     if (!audioCtx) return;
     const osc  = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.connect(gain);
     gain.connect(audioCtx.destination);
+
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(300, audioCtx.currentTime);
     osc.frequency.exponentialRampToValueAtTime(80, audioCtx.currentTime + 0.35);
+
     gain.gain.setValueAtTime(0.22, audioCtx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.35);
+
     osc.start();
     osc.stop(audioCtx.currentTime + 0.35);
   },
@@ -205,7 +216,7 @@ function setupConnection() {
   socket.on('player-joined', (player) => {
     initAudio();
     addPlayerToLobbyGrid(player);
-    // Seed leaderboard entry with player colour so dot appears immediately
+    // Seed leaderboard with player's color so we can show their dot immediately
     if (!liveLeaderboard[player.displayName]) {
       liveLeaderboard[player.displayName] = { color: player.color, pieces: 0, lastTimeSec: null };
     }
@@ -232,32 +243,36 @@ function setupConnection() {
     dragPositions.set(pieceId, { currentX, currentY });
   });
 
- // Event: Piece snapped correctly
+  // Event: Piece snapped correctly
   socket.on('piece-placed', (data) => {
     const { pieceId, correctX, correctY, placedBy, progress, isSolved, score } = data;
-
+    
+    // Snapped piece removes its temporary live dragging marker
     dragPositions.delete(pieceId);
-
+    
     if (puzzleData) {
       const piece = puzzleData.pieces.find(p => p.id === pieceId);
       if (piece) {
-        piece.isPlaced     = true;
-        piece.currentX     = correctX;
-        piece.currentY     = correctY;
+        piece.isPlaced = true;
+        piece.currentX = correctX;
+        piece.currentY = correctY;
         piece.placedByName = placedBy;
       }
     }
 
+    // Play snapping audio and show visual toast
     Sound.playSnap();
     spawnSparks(correctX + (puzzleData.pieceWidth / 2), correctY + (puzzleData.pieceHeight / 2), '#ff007f');
     spawnSparks(correctX + (puzzleData.pieceWidth / 2), correctY + (puzzleData.pieceHeight / 2), '#00f3ff');
-
+    
+    // Ticker announcement
     const ticker = document.getElementById('activityTicker');
     ticker.textContent = `🎯 ${placedBy} placed piece (${progress}% solved)`;
     ticker.classList.remove('ticker-error');
     ticker.classList.add('pulse');
     setTimeout(() => ticker.classList.remove('pulse'), 400);
 
+    // Update HUD progress
     document.getElementById('hudProgressFill').style.width = `${progress}%`;
     document.getElementById('hudProgressText').textContent = `${progress}%`;
 
@@ -265,14 +280,17 @@ function setupConnection() {
     if (!liveLeaderboard[placedBy]) {
       liveLeaderboard[placedBy] = { color: '#ffffff', pieces: 0, lastTimeSec: null };
     }
-    liveLeaderboard[placedBy].pieces     = Math.round((score || 0) / 100);
+    // score is 100 pts per piece, so pieces = score / 100
+    liveLeaderboard[placedBy].pieces    = Math.round((score || 0) / 100);
     liveLeaderboard[placedBy].lastTimeSec = liveTimerSecs;
     renderLiveLeaderboard(placedBy);
   });
 
-  // ── Event: Piece placed in WRONG position ─────────────────────────
+  // ── Event: Piece placed in WRONG position ────────────────────────
+  // (new event we added to socket/index.js)
   socket.on('piece-placement-failed', (data) => {
     Sound.playError();
+    // Flash the ticker red to signal the mistake
     const ticker = document.getElementById('activityTicker');
     ticker.textContent = `❌ ${data.placedBy} — wrong position!`;
     ticker.classList.add('ticker-error');
@@ -322,11 +340,15 @@ function startJigsawPuzzle(state) {
     clearInterval(confettiInterval);
     confettiInterval = null;
   }
-  // ── Reset live timer ─────────────────────────────────────────────
-  if (liveTimerInterval) clearInterval(liveTimerInterval);
+
+  // ── Reset live timer ─────────────────────────────────────────
+  if (liveTimerInterval) {
+    clearInterval(liveTimerInterval);
+  }
   liveTimerSecs = 0;
   const hudTimer = document.getElementById('hudTimer');
   if (hudTimer) hudTimer.textContent = '00:00';
+
   liveTimerInterval = setInterval(() => {
     liveTimerSecs++;
     if (hudTimer) {
@@ -336,9 +358,9 @@ function startJigsawPuzzle(state) {
     }
   }, 1000);
 
-  // ── Reset live leaderboard scores (keep colours from lobby) ──────
+  // ── Reset live leaderboard (but keep colour info seeded from lobby) ──
   Object.keys(liveLeaderboard).forEach(name => {
-    liveLeaderboard[name].pieces      = 0;
+    liveLeaderboard[name].pieces     = 0;
     liveLeaderboard[name].lastTimeSec = null;
   });
   renderLiveLeaderboard(null);
@@ -536,17 +558,33 @@ function triggerPuzzleCompletion({ leaderboard, totalPieces }) {
     `;
     list.appendChild(item);
   });
-// ── Full-screen canvas-confetti celebration 🎉 ──────────────────
+
+  // ── Full-screen canvas-confetti celebration 🎉 ──────────────────
   if (typeof confetti !== 'undefined') {
     const celebrationColors = ['#ff007f', '#00f3ff', '#ffb800', '#39ff14', '#9d00ff'];
     const celebrationEnd = Date.now() + 5500;
     (function launchCelebration() {
-      confetti({ particleCount: 9, angle: 60,  spread: 65, origin: { x: 0 }, colors: celebrationColors });
-      confetti({ particleCount: 9, angle: 120, spread: 65, origin: { x: 1 }, colors: celebrationColors });
-      if (Date.now() < celebrationEnd) requestAnimationFrame(launchCelebration);
+      confetti({
+        particleCount : 9,
+        angle         : 60,
+        spread        : 65,
+        origin        : { x: 0 },
+        colors        : celebrationColors
+      });
+      confetti({
+        particleCount : 9,
+        angle         : 120,
+        spread        : 65,
+        origin        : { x: 1 },
+        colors        : celebrationColors
+      });
+      if (Date.now() < celebrationEnd) {
+        requestAnimationFrame(launchCelebration);
+      }
     })();
   }
-  // Spawn dynamic rain of completion particles (confetti)
+
+  // Spawn dynamic rain of completion particles on the canvas (existing effect)
   // Store the interval ID so it can be cancelled on the next game start.
   confettiInterval = setInterval(() => {
     if (currentState === SCREEN_STATE.COMPLETE) {
@@ -558,11 +596,13 @@ function triggerPuzzleCompletion({ leaderboard, totalPieces }) {
   }, 400);
 }
 
-// ── LIVE LEADERBOARD RENDERER ──────────────────────────────────────
+// ── LIVE LEADERBOARD RENDERER ──────────────────────────────────────────
+// flashedName: displayName of player who just scored (to animate their row)
 function renderLiveLeaderboard(flashedName) {
   const container = document.getElementById('liveLeaderboardList');
   if (!container) return;
 
+  // Only show players who have placed at least 1 piece
   const sorted = Object.entries(liveLeaderboard)
     .filter(([, data]) => data.pieces > 0)
     .map(([name, data]) => ({ name, ...data }))
@@ -574,12 +614,14 @@ function renderLiveLeaderboard(flashedName) {
   }
 
   const medals = ['🥇', '🥈', '🥉'];
+
   container.innerHTML = sorted.map((p, i) => {
     const rank    = medals[i] || `${i + 1}`;
     const timeStr = p.lastTimeSec !== null
       ? `@${String(Math.floor(p.lastTimeSec / 60)).padStart(2, '0')}:${String(p.lastTimeSec % 60).padStart(2, '0')}`
       : '';
     const flashClass = p.name === flashedName ? 'lb-score-flash' : '';
+
     return `
       <div class="lb-entry ${flashClass}">
         <span class="lb-rank">${rank}</span>
@@ -592,6 +634,7 @@ function renderLiveLeaderboard(flashedName) {
       </div>`;
   }).join('');
 }
+
 // Main Frame tick
 function gameLoop() {
   updateStars();
@@ -623,6 +666,11 @@ window.addEventListener('DOMContentLoaded', () => {
 
   window.addEventListener('resize', handleResize);
   handleResize();
+
+  // Try to create AudioContext immediately (some browsers allow this)
+  // Also unlock on first click in case browser blocked it
+  initAudio();
+  document.addEventListener('click', initAudio, { once: true });
 
   setupConnection();
 
